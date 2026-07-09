@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "M8EJpaFlGioUr5EKjdI6F"
+uri = "file://whatsapp-platform.zip"
+type = "unspecified"
+title = "whatsapp-platform.zip"
