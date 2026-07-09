@@ -1,44 +1,71 @@
-# [Project name]
+# WhatsApp Business Platform
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+A full-stack WhatsApp Business management platform with customer management, bulk campaigns, conversation inbox, analytics, and settings — backed by the Meta WhatsApp Business API.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server (port from `$PORT`)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/db run push` — push DB schema changes to the database (dev only)
+- Required env vars:
+  - `DATABASE_URL` — PostgreSQL connection string
+  - `JWT_SECRET` (or `SESSION_SECRET`) — secret for signing JWTs (min 32 chars)
+  - `PORT` — port the server listens on
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
 - DB: PostgreSQL + Drizzle ORM
+- Auth: JWT (bcryptjs + jsonwebtoken)
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Build: esbuild (CJS-compatible ESM bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/routes/` — all API route handlers
+- `artifacts/api-server/src/middlewares/auth.ts` — JWT auth middleware + token helpers
+- `artifacts/api-server/src/seed-admin.ts` — seeds initial admin user
+- `lib/db/src/schema/index.ts` — **source of truth** for all DB tables
+- `lib/api-zod/src/generated/api.ts` — **source of truth** for all Zod validation schemas
+- `lib/api-spec/openapi.yaml` — OpenAPI spec (for codegen)
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- JWT-based auth with short-lived access tokens (15m) and long-lived refresh tokens (7d)
+- All settings (WhatsApp credentials, AI config, business info) stored as JSON in the `settings` table — no extra env vars needed at runtime beyond the required ones
+- esbuild bundles the entire server into a single ESM `.mjs` file for fast cold starts
+- `@workspace/db` and `@workspace/api-zod` are workspace packages bundled at build time — Railway sees the full monorepo
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- `/api/auth/*` — login, register, token refresh, profile, change password
+- `/api/customers` — CRUD + bulk import + stats + notes
+- `/api/campaigns` — CRUD + schedule/pause/resume/cancel/duplicate + analytics
+- `/api/templates` — WhatsApp message template management
+- `/api/conversations` — inbox with join to customer data + message send + handoff
+- `/api/dashboard/*` — KPIs, activity feed, message stats, campaign status breakdown
+- `/api/analytics/*` — overview, message timeline, top campaigns
+- `/api/settings/*` — WhatsApp, AI, and business configuration
+- `/api/webhooks/whatsapp` — receive + process inbound WhatsApp messages
+
+## Default admin credentials
+
+- Email: `admin@talha.com`
+- Password: `Admin@1234`
+- Run seed: `pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/api-server run seed`
+
+## Gotchas
+
+- `JWT_SECRET` (or `SESSION_SECRET`) must be set **before** the server starts — the middleware throws at import time if missing
+- After any schema change in `lib/db/src/schema/index.ts`, run `pnpm --filter @workspace/db run push` to apply to the database
+- The esbuild overrides in `pnpm-workspace.yaml` pin esbuild to `0.27.3` and exclude non-linux-x64 binaries — this is fine for Railway (linux-x64) but will break on macOS ARM without changes
 
 ## User preferences
 
 _Populate as you build — explicit user instructions worth remembering across sessions._
-
-## Gotchas
-
-_Populate as you build — sharp edges, "always run X before Y" rules._
 
 ## Pointers
 

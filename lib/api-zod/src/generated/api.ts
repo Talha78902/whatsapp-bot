@@ -7,10 +7,204 @@
  */
 import * as zod from "zod";
 
+// ─── Health ──────────────────────────────────────────────────────────────────
+
 /**
  * Returns server health status
  * @summary Health check
  */
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
+});
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+export const LoginBody = zod.object({
+  email: zod.string().email(),
+  password: zod.string().min(1),
+});
+
+export const RegisterBody = zod.object({
+  name: zod.string().min(1),
+  email: zod.string().email(),
+  password: zod.string().min(6),
+});
+
+export const RefreshTokenBody = zod.object({
+  refreshToken: zod.string().min(1),
+});
+
+export const ChangePasswordBody = zod.object({
+  currentPassword: zod.string().min(1),
+  newPassword: zod.string().min(6),
+});
+
+// ─── Customers ───────────────────────────────────────────────────────────────
+
+export const CreateCustomerBody = zod.object({
+  name: zod.string().min(1),
+  phone: zod.string().min(1),
+  email: zod.string().email().optional(),
+  status: zod.enum(["active", "inactive", "blocked"]).optional().default("active"),
+  tags: zod.array(zod.string()).optional().default([]),
+  notes: zod.string().optional(),
+});
+
+export const UpdateCustomerBody = zod.object({
+  name: zod.string().min(1).optional(),
+  phone: zod.string().min(1).optional(),
+  email: zod.string().email().optional().nullable(),
+  status: zod.enum(["active", "inactive", "blocked"]).optional(),
+  tags: zod.array(zod.string()).optional(),
+  notes: zod.string().optional().nullable(),
+});
+
+export const GetCustomerParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const UpdateCustomerParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const DeleteCustomerParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const GetCustomerNotesParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const AddCustomerNoteParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const AddCustomerNoteBody = zod.object({
+  content: zod.string().min(1),
+});
+
+export const ImportCustomersBody = zod.object({
+  customers: zod.array(
+    zod.object({
+      name: zod.string().min(1),
+      phone: zod.string().min(1),
+      email: zod.string().email().optional(),
+      status: zod.enum(["active", "inactive", "blocked"]).optional().default("active"),
+      tags: zod.array(zod.string()).optional().default([]),
+      notes: zod.string().optional(),
+    })
+  ),
+});
+
+// ─── Campaigns ───────────────────────────────────────────────────────────────
+
+export const CreateCampaignBody = zod.object({
+  name: zod.string().min(1),
+  templateId: zod.number().int().positive().optional().nullable(),
+  message: zod.string().optional().nullable(),
+  targetAudience: zod.string().optional().nullable(),
+  status: zod.enum(["draft", "scheduled", "running", "paused", "cancelled", "completed"]).optional().default("draft"),
+});
+
+export const UpdateCampaignBody = zod.object({
+  name: zod.string().min(1).optional(),
+  templateId: zod.number().int().positive().optional().nullable(),
+  message: zod.string().optional().nullable(),
+  targetAudience: zod.string().optional().nullable(),
+  status: zod.enum(["draft", "scheduled", "running", "paused", "cancelled", "completed"]).optional(),
+});
+
+export const GetCampaignParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const UpdateCampaignParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const DeleteCampaignParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const ScheduleCampaignParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const ScheduleCampaignBody = zod.object({
+  scheduledAt: zod.string().min(1),
+  sendNow: zod.boolean().optional().default(false),
+});
+
+// ─── Templates ───────────────────────────────────────────────────────────────
+
+export const CreateTemplateBody = zod.object({
+  name: zod.string().min(1),
+  category: zod.string().min(1),
+  body: zod.string().min(1),
+  variables: zod.array(zod.string()).optional().default([]),
+  language: zod.string().optional().default("en"),
+  status: zod.enum(["pending", "approved", "rejected"]).optional().default("pending"),
+});
+
+export const UpdateTemplateBody = zod.object({
+  name: zod.string().min(1).optional(),
+  category: zod.string().min(1).optional(),
+  body: zod.string().min(1).optional(),
+  variables: zod.array(zod.string()).optional(),
+  language: zod.string().optional(),
+  status: zod.enum(["pending", "approved", "rejected"]).optional(),
+});
+
+export const GetTemplateParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const UpdateTemplateParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const DeleteTemplateParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+// ─── Conversations ───────────────────────────────────────────────────────────
+
+export const GetConversationParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const ListConversationMessagesParams = zod.object({
+  id: zod.coerce.number().int().positive(),
+});
+
+export const SendConversationMessageBody = zod.object({
+  type: zod.enum(["text", "image", "audio", "video", "document"]).default("text"),
+  content: zod.string().min(1),
+});
+
+// ─── Settings ────────────────────────────────────────────────────────────────
+
+export const UpdateWhatsappSettingsBody = zod.object({
+  phoneNumberId: zod.string().optional(),
+  businessAccountId: zod.string().optional(),
+  accessToken: zod.string().optional(),
+  webhookVerifyToken: zod.string().optional(),
+});
+
+export const UpdateAiSettingsBody = zod.object({
+  isEnabled: zod.boolean().optional(),
+  model: zod.string().optional(),
+  systemPrompt: zod.string().optional(),
+  autoHandoff: zod.boolean().optional(),
+  handoffKeywords: zod.array(zod.string()).optional(),
+  knowledgeBase: zod.string().optional(),
+});
+
+export const UpdateBusinessSettingsBody = zod.object({
+  businessName: zod.string().optional(),
+  businessEmail: zod.string().email().optional(),
+  businessPhone: zod.string().optional(),
+  businessAddress: zod.string().optional(),
+  timezone: zod.string().optional(),
+  language: zod.string().optional(),
 });
