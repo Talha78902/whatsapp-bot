@@ -9,7 +9,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.resolve(__dirname, "../../data");
+// On Vercel the working directory is read-only; /tmp is always writable.
+// Locally it writes to <repo-root>/data/
+const DATA_DIR =
+  process.env.DATA_DIR ??
+  (process.env.VERCEL ? "/tmp" : path.resolve(__dirname, "../../data"));
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
