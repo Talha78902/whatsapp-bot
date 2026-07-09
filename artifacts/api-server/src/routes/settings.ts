@@ -1,100 +1,59 @@
-import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
-import { db, settingsTable } from "@workspace/db";
-import {
-  UpdateWhatsappSettingsBody,
-  UpdateAiSettingsBody,
-  UpdateBusinessSettingsBody,
-} from "@workspace/api-zod";
-import { requireAuth } from "../middlewares/auth";
+import { Router } from "express";
+import { settings } from "../lib/store.js";
+import { requireAuth } from "../middlewares/auth.js";
 
-const router: IRouter = Router();
+export const router = Router();
 
-async function getSetting(key: string): Promise<string | null> {
-  const [row] = await db.select().from(settingsTable).where(eq(settingsTable.key, key));
-  return row?.value ?? null;
-}
-
-async function setSetting(key: string, value: string): Promise<void> {
-  const existing = await getSetting(key);
-  if (existing !== null) {
-    await db.update(settingsTable).set({ value }).where(eq(settingsTable.key, key));
-  } else {
-    await db.insert(settingsTable).values({ key, value });
-  }
-}
-
-async function buildSettingsResponse() {
-  const whatsappRaw = await getSetting("whatsapp");
-  const aiRaw = await getSetting("ai");
-  const businessRaw = await getSetting("business");
-
-  const whatsapp = whatsappRaw
-    ? JSON.parse(whatsappRaw)
-    : { phoneNumberId: "", businessAccountId: "", accessToken: "", webhookVerifyToken: "", isConfigured: false };
-
-  const ai = aiRaw
-    ? JSON.parse(aiRaw)
-    : { isEnabled: false, model: "gpt-4o-mini", systemPrompt: "", autoHandoff: true, handoffKeywords: [], knowledgeBase: "" };
-
-  const business = businessRaw
-    ? JSON.parse(businessRaw)
-    : { businessName: "", businessEmail: "", businessPhone: "", businessAddress: "", timezone: "UTC", language: "en" };
-
-  return { whatsapp, ai, business };
-}
-
-router.get("/settings", requireAuth, async (req, res): Promise<void> => {
-  const settings = await buildSettingsResponse();
-  res.json(settings);
+// GET /api/settings/whatsapp
+router.get("/settings/whatsapp", requireAuth, (_req, res): void => {
+  const data = settings.getJson("whatsapp") ?? {
+    phoneNumberId: "",
+    accessToken: "",
+    webhookVerifyToken: "",
+    businessAccountId: "",
+  };
+  res.json(data);
 });
 
-router.put("/settings/whatsapp", requireAuth, async (req, res): Promise<void> => {
-  const parsed = UpdateWhatsappSettingsBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
-
-  const current = await getSetting("whatsapp");
-  const currentObj = current ? JSON.parse(current) : {};
-  const updated = { ...currentObj, ...parsed.data, isConfigured: !!(parsed.data.phoneNumberId && parsed.data.accessToken) };
-  await setSetting("whatsapp", JSON.stringify(updated));
-
-  const settings = await buildSettingsResponse();
-  res.json(settings);
+// PUT /api/settings/whatsapp
+router.put("/settings/whatsapp", requireAuth, (req, res): void => {
+  settings.setJson("whatsapp", req.body);
+  res.json(settings.getJson("whatsapp"));
 });
 
-router.put("/settings/ai", requireAuth, async (req, res): Promise<void> => {
-  const parsed = UpdateAiSettingsBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
-
-  const current = await getSetting("ai");
-  const currentObj = current ? JSON.parse(current) : {};
-  const updated = { ...currentObj, ...parsed.data };
-  await setSetting("ai", JSON.stringify(updated));
-
-  const settings = await buildSettingsResponse();
-  res.json(settings);
+// GET /api/settings/ai
+router.get("/settings/ai", requireAuth, (_req, res): void => {
+  const data = settings.getJson("ai") ?? {
+    provider: "openai",
+    model: "gpt-4",
+    apiKey: "",
+    systemPrompt: "",
+    enabled: false,
+  };
+  res.json(data);
 });
 
-router.put("/settings/business", requireAuth, async (req, res): Promise<void> => {
-  const parsed = UpdateBusinessSettingsBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
-
-  const current = await getSetting("business");
-  const currentObj = current ? JSON.parse(current) : {};
-  const updated = { ...currentObj, ...parsed.data };
-  await setSetting("business", JSON.stringify(updated));
-
-  const settings = await buildSettingsResponse();
-  res.json(settings);
+// PUT /api/settings/ai
+router.put("/settings/ai", requireAuth, (req, res): void => {
+  settings.setJson("ai", req.body);
+  res.json(settings.getJson("ai"));
 });
 
-export default router;
+// GET /api/settings/business
+router.get("/settings/business", requireAuth, (_req, res): void => {
+  const data = settings.getJson("business") ?? {
+    name: "",
+    email: "",
+    phone: "",
+    address: "",
+    website: "",
+    logo: "",
+  };
+  res.json(data);
+});
+
+// PUT /api/settings/business
+router.put("/settings/business", requireAuth, (req, res): void => {
+  settings.setJson("business", req.body);
+  res.json(settings.getJson("business"));
+});

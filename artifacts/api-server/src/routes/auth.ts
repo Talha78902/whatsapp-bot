@@ -1,199 +1,112 @@
-import { Router, type IRouter } from "express";
+import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
-import { db, usersTable } from "@workspace/db";
-import {
-  LoginBody,
-  RegisterBody,
-  RefreshTokenBody,
-  ChangePasswordBody,
-} from "@workspace/api-zod";
-import { requireAuth, signAccessToken, signRefreshToken, type AuthPayload } from "../middlewares/auth";
+import { users } from "../lib/store.js";
+import { requireAuth, signAccessToken, signRefreshToken } from "../middlewares/auth.js";
 import jwt from "jsonwebtoken";
-import { logger } from "../lib/logger";
 
-const JWT_SECRET = process.env.JWT_SECRET ?? process.env.SESSION_SECRET;
-if (!JWT_SECRET) throw new Error("JWT_SECRET or SESSION_SECRET must be set");
+const JWT_SECRET = process.env.JWT_SECRET ?? process.env.SESSION_SECRET ?? "";
 
-const router: IRouter = Router();
+export const router = Router();
 
-router.post("/auth/login", async (req, res): Promise<void> => {
-  const parsed = LoginBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
+function safeUser(u: ReturnType<typeof users.findById>) {
+  if (!u) return null;
+  const { password: _, refreshToken: __, ...rest } = u;
+  return rest;
+}
 
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.email, parsed.data.email));
-  if (!user) {
-    res.status(401).json({ error: "Invalid credentials", message: "Email or password is incorrect" });
-    return;
-  }
-
-  const valid = await bcrypt.compare(parsed.data.password, user.passwordHash);
-  if (!valid) {
-    res.status(401).json({ error: "Invalid credentials", message: "Email or password is incorrect" });
-    return;
-  }
-
-  const accessToken = signAccessToken(user.id, user.email, user.role);
-  const refreshToken = signRefreshToken(user.id, user.email, user.role);
-
-  await db.update(usersTable).set({ refreshToken }).where(eq(usersTable.id, user.id));
-
-  res.json({
-    accessToken,
-    refreshToken,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      avatar: user.avatar ?? null,
-      createdAt: user.createdAt.toISOString(),
-    },
-  });
-});
-
+// POST /api/auth/register
 router.post("/auth/register", async (req, res): Promise<void> => {
-  const parsed = RegisterBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
+  const { email, password, name, role } = req.body as Record<string, string>;
+  if (!email || !password || !name) {
+    res.status(400).json({ error: "Invalid input", message: "email, password and name are required" });
     return;
   }
-
-  const [existing] = await db.select().from(usersTable).where(eq(usersTable.email, parsed.data.email));
-  if (existing) {
+  if (users.findByEmail(email)) {
     res.status(409).json({ error: "Conflict", message: "Email already registered" });
     return;
   }
-
-  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
-  // Always assign "agent" role on self-registration — admin role must be granted manually
-  const [user] = await db
-    .insert(usersTable)
-    .values({
-      name: parsed.data.name,
-      email: parsed.data.email,
-      passwordHash,
-      role: "agent",
-    })
-    .returning();
-
-  if (!user) {
-    res.status(500).json({ error: "Server error", message: "Failed to create user" });
-    return;
-  }
-
-  const accessToken = signAccessToken(user.id, user.email, user.role);
-  const refreshToken = signRefreshToken(user.id, user.email, user.role);
-
-  await db.update(usersTable).set({ refreshToken }).where(eq(usersTable.id, user.id));
-
-  res.status(201).json({
-    accessToken,
-    refreshToken,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      avatar: user.avatar ?? null,
-      createdAt: user.createdAt.toISOString(),
-    },
-  });
+  const hashed = await bcrypt.hash(password, 12);
+  const user = users.insert({ email, password: hashed, name, role: role === "agent" ? "agent" : "admin", avatar: null, refreshToken: null });
+  const accessToken = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+  const refreshToken = signRefreshToken({ userId: user.id });
+  users.update(user.id, { refreshToken });
+  res.status(201).json({ accessToken, refreshToken, user: safeUser(user) });
 });
 
-router.post("/auth/refresh", async (req, res): Promise<void> => {
-  const parsed = RefreshTokenBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
+// POST /api/auth/login
+router.post("/auth/login", async (req, res): Promise<void> => {
+  const { email, password } = req.body as Record<string, string>;
+  if (!email || !password) {
+    res.status(400).json({ error: "Invalid input", message: "email and password are required" });
     return;
   }
+  const user = users.findByEmail(email);
+  if (!user) {
+    res.status(401).json({ error: "Unauthorized", message: "Invalid credentials" });
+    return;
+  }
+  const valid = await bcrypt.compare(password, user.password);
+  if (!valid) {
+    res.status(401).json({ error: "Unauthorized", message: "Invalid credentials" });
+    return;
+  }
+  const accessToken = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+  const refreshToken = signRefreshToken({ userId: user.id });
+  users.update(user.id, { refreshToken });
+  res.json({ accessToken, refreshToken, user: safeUser(user) });
+});
 
-  let decoded: AuthPayload;
+// POST /api/auth/refresh
+router.post("/auth/refresh", (req, res): void => {
+  const { refreshToken } = req.body as { refreshToken?: string };
+  if (!refreshToken) {
+    res.status(400).json({ error: "Invalid input", message: "refreshToken is required" });
+    return;
+  }
   try {
-    decoded = jwt.verify(parsed.data.refreshToken, JWT_SECRET!) as AuthPayload;
+    const payload = jwt.verify(refreshToken, JWT_SECRET) as { userId: number };
+    const user = users.findById(payload.userId);
+    if (!user || user.refreshToken !== refreshToken) {
+      res.status(401).json({ error: "Unauthorized", message: "Invalid refresh token" });
+      return;
+    }
+    const newAccess = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+    const newRefresh = signRefreshToken({ userId: user.id });
+    users.update(user.id, { refreshToken: newRefresh });
+    res.json({ accessToken: newAccess, refreshToken: newRefresh });
   } catch {
     res.status(401).json({ error: "Unauthorized", message: "Invalid or expired refresh token" });
-    return;
   }
-
-  if (decoded.type !== "refresh") {
-    res.status(401).json({ error: "Unauthorized", message: "Invalid token type" });
-    return;
-  }
-
-  const [user] = await db
-    .select()
-    .from(usersTable)
-    .where(eq(usersTable.id, decoded.userId));
-
-  if (!user || user.refreshToken !== parsed.data.refreshToken) {
-    res.status(401).json({ error: "Unauthorized", message: "Refresh token revoked" });
-    return;
-  }
-
-  const accessToken = signAccessToken(user.id, user.email, user.role);
-  const refreshToken = signRefreshToken(user.id, user.email, user.role);
-
-  await db.update(usersTable).set({ refreshToken }).where(eq(usersTable.id, user.id));
-
-  res.json({
-    accessToken,
-    refreshToken,
-    user: {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      avatar: user.avatar ?? null,
-      createdAt: user.createdAt.toISOString(),
-    },
-  });
 });
 
-router.get("/auth/me", requireAuth, async (req, res): Promise<void> => {
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.user!.userId));
-  if (!user) {
-    res.status(404).json({ error: "Not found", message: "User not found" });
-    return;
-  }
-  res.json({
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    role: user.role,
-    avatar: user.avatar ?? null,
-    createdAt: user.createdAt.toISOString(),
-  });
+// GET /api/auth/me
+router.get("/auth/me", requireAuth, (req, res): void => {
+  const user = users.findById(req.auth!.userId);
+  if (!user) { res.status(404).json({ error: "Not found", message: "User not found" }); return; }
+  res.json(safeUser(user));
 });
 
-router.put("/auth/me/password", requireAuth, async (req, res): Promise<void> => {
-  const parsed = ChangePasswordBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
+// POST /api/auth/change-password
+router.post("/auth/change-password", requireAuth, async (req, res): Promise<void> => {
+  const { currentPassword, newPassword } = req.body as Record<string, string>;
+  if (!currentPassword || !newPassword) {
+    res.status(400).json({ error: "Invalid input", message: "currentPassword and newPassword are required" });
     return;
   }
-
-  const [user] = await db.select().from(usersTable).where(eq(usersTable.id, req.user!.userId));
-  if (!user) {
-    res.status(404).json({ error: "Not found", message: "User not found" });
-    return;
-  }
-
-  const valid = await bcrypt.compare(parsed.data.currentPassword, user.passwordHash);
+  const user = users.findById(req.auth!.userId);
+  if (!user) { res.status(404).json({ error: "Not found", message: "User not found" }); return; }
+  const valid = await bcrypt.compare(currentPassword, user.password);
   if (!valid) {
-    res.status(400).json({ error: "Invalid password", message: "Current password is incorrect" });
+    res.status(401).json({ error: "Unauthorized", message: "Current password is incorrect" });
     return;
   }
-
-  const passwordHash = await bcrypt.hash(parsed.data.newPassword, 12);
-  await db.update(usersTable).set({ passwordHash }).where(eq(usersTable.id, user.id));
-
-  res.json({ success: true, message: "Password changed successfully" });
+  const hashed = await bcrypt.hash(newPassword, 12);
+  users.update(user.id, { password: hashed, refreshToken: null });
+  res.json({ message: "Password changed successfully" });
 });
 
-void logger; // suppress unused import warning
-
-export default router;
+// POST /api/auth/logout
+router.post("/auth/logout", requireAuth, (req, res): void => {
+  users.update(req.auth!.userId, { refreshToken: null });
+  res.json({ message: "Logged out successfully" });
+});

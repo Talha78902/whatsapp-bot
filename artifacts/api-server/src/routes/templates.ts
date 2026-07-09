@@ -1,124 +1,67 @@
-import { Router, type IRouter } from "express";
-import { eq, ilike, sql } from "drizzle-orm";
-import { db, templatesTable } from "@workspace/db";
-import {
-  CreateTemplateBody,
-  UpdateTemplateBody,
-  GetTemplateParams,
-  UpdateTemplateParams,
-  DeleteTemplateParams,
-} from "@workspace/api-zod";
-import { requireAuth } from "../middlewares/auth";
+import { Router } from "express";
+import { templates } from "../lib/store.js";
+import { requireAuth } from "../middlewares/auth.js";
 
-const router: IRouter = Router();
+export const router = Router();
 
-router.get("/templates", requireAuth, async (req, res): Promise<void> => {
-  const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10));
-  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10)));
-  const offset = (page - 1) * limit;
-  const category = req.query.category ? String(req.query.category) : null;
-  const status = req.query.status ? String(req.query.status) : null;
-
-  const conditions = [];
-  if (category) conditions.push(eq(templatesTable.category, category));
-  if (status) conditions.push(eq(templatesTable.status, status));
-
-  const whereClause = conditions.length > 0 ? sql`${conditions.reduce((a, b) => sql`${a} AND ${b}`)}` : undefined;
-
-  const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(templatesTable).where(whereClause);
-
-  const templates = await db
-    .select()
-    .from(templatesTable)
-    .where(whereClause)
-    .orderBy(templatesTable.createdAt)
-    .limit(limit)
-    .offset(offset);
-
-  res.json({
-    data: templates.map(serializeTemplate),
-    total: count,
-    page,
-    limit,
-  });
-});
-
-router.post("/templates", requireAuth, async (req, res): Promise<void> => {
-  const parsed = CreateTemplateBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
-
-  const [template] = await db.insert(templatesTable).values(parsed.data).returning();
-  res.status(201).json(serializeTemplate(template));
-});
-
-router.get("/templates/:id", requireAuth, async (req, res): Promise<void> => {
-  const params = GetTemplateParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const [template] = await db.select().from(templatesTable).where(eq(templatesTable.id, params.data.id));
-  if (!template) {
-    res.status(404).json({ error: "Not found", message: "Template not found" });
-    return;
-  }
-
-  res.json(serializeTemplate(template));
-});
-
-router.put("/templates/:id", requireAuth, async (req, res): Promise<void> => {
-  const params = UpdateTemplateParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const parsed = UpdateTemplateBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
-
-  const [template] = await db
-    .update(templatesTable)
-    .set({ ...parsed.data, updatedAt: new Date() })
-    .where(eq(templatesTable.id, params.data.id))
-    .returning();
-
-  if (!template) {
-    res.status(404).json({ error: "Not found", message: "Template not found" });
-    return;
-  }
-
-  res.json(serializeTemplate(template));
-});
-
-router.delete("/templates/:id", requireAuth, async (req, res): Promise<void> => {
-  const params = DeleteTemplateParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const [deleted] = await db.delete(templatesTable).where(eq(templatesTable.id, params.data.id)).returning();
-  if (!deleted) {
-    res.status(404).json({ error: "Not found", message: "Template not found" });
-    return;
-  }
-
-  res.json({ success: true, message: "Template deleted" });
-});
-
-function serializeTemplate(t: typeof templatesTable.$inferSelect) {
-  return {
-    ...t,
-    createdAt: t.createdAt.toISOString(),
-    updatedAt: t.updatedAt.toISOString(),
-  };
+function parseId(raw: string | string[]): number | null {
+  const str = Array.isArray(raw) ? raw[0] : raw;
+  const id = parseInt(str, 10);
+  return Number.isFinite(id) && id > 0 ? id : null;
 }
 
-export default router;
+// GET /api/templates
+router.get("/templates", requireAuth, (req, res): void => {
+  const { search, category, status } = req.query as Record<string, string>;
+  res.json(templates.findAll({ search, category, status }));
+});
+
+// GET /api/templates/:id
+router.get("/templates/:id", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  const template = templates.findById(id);
+  if (!template) { res.status(404).json({ error: "Not found", message: "Template not found" }); return; }
+  res.json(template);
+});
+
+// POST /api/templates
+router.post("/templates", requireAuth, (req, res): void => {
+  const { name, category, body, variables, language, status } = req.body as Record<string, unknown>;
+  if (!name || !body) { res.status(400).json({ error: "Invalid input", message: "name and body are required" }); return; }
+  const template = templates.insert({
+    name: String(name),
+    category: category ? String(category) : "marketing",
+    body: String(body),
+    variables: Array.isArray(variables) ? variables.map(String) : [],
+    language: language ? String(language) : "en",
+    status: (status as "approved" | "pending" | "rejected") ?? "pending",
+  });
+  res.status(201).json(template);
+});
+
+// PUT /api/templates/:id
+router.put("/templates/:id", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  const { name, category, body, variables, language, status } = req.body as Record<string, unknown>;
+  const updated = templates.update(id, {
+    ...(name !== undefined && { name: String(name) }),
+    ...(category !== undefined && { category: String(category) }),
+    ...(body !== undefined && { body: String(body) }),
+    ...(variables !== undefined && { variables: Array.isArray(variables) ? variables.map(String) : [] }),
+    ...(language !== undefined && { language: String(language) }),
+    ...(status !== undefined && { status: status as "approved" | "pending" | "rejected" }),
+  });
+  if (!updated) { res.status(404).json({ error: "Not found", message: "Template not found" }); return; }
+  res.json(updated);
+});
+
+// DELETE /api/templates/:id
+router.delete("/templates/:id", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  const deleted = templates.delete(id);
+  if (!deleted) { res.status(404).json({ error: "Not found", message: "Template not found" }); return; }
+  res.json({ message: "Template deleted" });
+});

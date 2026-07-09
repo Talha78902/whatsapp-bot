@@ -1,130 +1,73 @@
-import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
-import { db, settingsTable, customersTable, conversationsTable, conversationMessagesTable, activityLogsTable } from "@workspace/db";
-import { logger } from "../lib/logger";
+import { Router } from "express";
+import { settings, customers, conversations, conversationMessages } from "../lib/store.js";
 
-const router: IRouter = Router();
+export const router = Router();
 
-async function getVerifyToken(): Promise<string | null> {
-  const [row] = await db.select().from(settingsTable).where(eq(settingsTable.key, "whatsapp"));
-  if (!row) return null;
-  try {
-    const settings = JSON.parse(row.value);
-    return settings.webhookVerifyToken ?? null;
-  } catch {
-    return null;
-  }
-}
-
-router.get("/webhooks/whatsapp", async (req, res): Promise<void> => {
+// GET /api/webhooks/whatsapp — Meta webhook verification
+router.get("/webhooks/whatsapp", (req, res): void => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-
-  if (mode !== "subscribe") {
-    res.status(403).json({ error: "Forbidden", message: "Invalid hub.mode" });
-    return;
+  const waSettings = settings.getJson<{ webhookVerifyToken?: string }>("whatsapp");
+  const verifyToken = waSettings?.webhookVerifyToken ?? process.env.WA_VERIFY_TOKEN ?? "";
+  if (mode === "subscribe" && token === verifyToken) {
+    res.status(200).send(challenge);
+  } else {
+    res.status(403).json({ error: "Forbidden", message: "Invalid verify token" });
   }
-
-  const verifyToken = await getVerifyToken();
-  if (!verifyToken || token !== verifyToken) {
-    res.status(403).json({ error: "Forbidden", message: "Verification token mismatch" });
-    return;
-  }
-
-  res.status(200).send(String(challenge));
 });
 
-router.post("/webhooks/whatsapp", async (req, res): Promise<void> => {
-  const payload = req.body;
-
-  if (payload.object !== "whatsapp_business_account") {
-    res.json({ success: true });
-    return;
-  }
+// POST /api/webhooks/whatsapp — inbound messages from Meta
+router.post("/webhooks/whatsapp", (req, res): void => {
+  // Acknowledge immediately — Meta requires a 200 within a few seconds
+  res.sendStatus(200);
 
   try {
-    for (const entry of payload.entry ?? []) {
-      for (const change of entry.changes ?? []) {
-        if (change.field !== "messages") continue;
+    const body = req.body as Record<string, unknown>;
+    const entries = (body.entry as Array<Record<string, unknown>>) ?? [];
+    for (const entry of entries) {
+      const changes = (entry.changes as Array<Record<string, unknown>>) ?? [];
+      for (const change of changes) {
+        const value = change.value as Record<string, unknown>;
+        const messages = (value.messages as Array<Record<string, unknown>>) ?? [];
+        for (const msg of messages) {
+          const from = String(msg.from ?? "");
+          const waMessageId = String(msg.id ?? "");
+          const type = String(msg.type ?? "text");
+          const text = (msg.text as Record<string, string>)?.body ?? "";
 
-        const value = change.value;
-        for (const message of value.messages ?? []) {
-          const phone = message.from;
-          const text = message.text?.body ?? message.type ?? "[media]";
+          if (!from) continue;
 
-          let [customer] = await db.select().from(customersTable).where(eq(customersTable.phone, phone));
+          // Find or create customer by phone
+          let customer = customers.findByPhone(from);
           if (!customer) {
-            const [newCustomer] = await db.insert(customersTable).values({ name: phone, phone, status: "active" }).returning();
-            customer = newCustomer;
-
-            await db.insert(activityLogsTable).values({
-              type: "customer_added",
-              title: "New customer from WhatsApp",
-              description: `New contact ${phone} messaged your business`,
-            });
+            const contacts = (value.contacts as Array<Record<string, unknown>>) ?? [];
+            const name = (contacts[0]?.profile as Record<string, string>)?.name ?? from;
+            customer = customers.insert({ name, phone: from, email: null, tags: [], status: "active", assignedTo: null, waId: from });
           }
 
-          let [conversation] = await db
-            .select()
-            .from(conversationsTable)
-            .where(eq(conversationsTable.customerId, customer.id));
-
-          if (!conversation) {
-            const [newConv] = await db
-              .insert(conversationsTable)
-              .values({ customerId: customer.id, status: "open", isAiEnabled: true })
-              .returning();
-            conversation = newConv;
-
-            await db.insert(activityLogsTable).values({
-              type: "conversation_opened",
-              title: "New conversation",
-              description: `New conversation started with ${customer.name}`,
-            });
+          // Find or create open conversation
+          let conv = conversations.findByCustomerId(customer.id);
+          if (!conv) {
+            conv = conversations.insert({ customerId: customer.id, status: "open", assignedTo: null, lastMessageAt: new Date().toISOString(), lastMessagePreview: text.slice(0, 100) });
+          } else {
+            conversations.update(conv.id, { lastMessageAt: new Date().toISOString(), lastMessagePreview: text.slice(0, 100) });
           }
 
-          await db.insert(conversationMessagesTable).values({
-            conversationId: conversation.id,
+          // Store the message
+          conversationMessages.insert({
+            conversationId: conv.id,
             direction: "inbound",
-            type: message.type ?? "text",
+            type,
             content: text,
-            status: "delivered",
-            waMessageId: message.id,
+            status: "received",
+            waMessageId,
+            isAiGenerated: false,
           });
-
-          await db
-            .update(conversationsTable)
-            .set({
-              lastMessageAt: new Date(),
-              lastMessagePreview: text.slice(0, 100),
-              unreadCount: (conversation.unreadCount ?? 0) + 1,
-              updatedAt: new Date(),
-            })
-            .where(eq(conversationsTable.id, conversation.id));
-
-          await db
-            .update(customersTable)
-            .set({ lastContactedAt: new Date(), updatedAt: new Date() })
-            .where(eq(customersTable.id, customer.id));
-        }
-
-        for (const status of value.statuses ?? []) {
-          const waMessageId = status.id;
-          const newStatus = status.status;
-
-          await db
-            .update(conversationMessagesTable)
-            .set({ status: newStatus })
-            .where(eq(conversationMessagesTable.waMessageId, waMessageId));
         }
       }
     }
-  } catch (err) {
-    logger.error({ err }, "Error processing WhatsApp webhook");
+  } catch {
+    // swallow — we already sent 200
   }
-
-  res.json({ success: true });
 });
-
-export default router;

@@ -1,14 +1,14 @@
 import { Router, type IRouter } from "express";
-import healthRouter from "./health";
-import authRouter from "./auth";
-import customersRouter from "./customers";
-import campaignsRouter from "./campaigns";
-import templatesRouter from "./templates";
-import conversationsRouter from "./conversations";
-import dashboardRouter from "./dashboard";
-import analyticsRouter from "./analytics";
-import settingsRouter from "./settings";
-import webhooksRouter from "./webhooks";
+import healthRouter from "./health.js";
+import { router as authRouter } from "./auth.js";
+import { router as customersRouter } from "./customers.js";
+import { router as campaignsRouter } from "./campaigns.js";
+import { router as templatesRouter } from "./templates.js";
+import { router as conversationsRouter } from "./conversations.js";
+import { router as dashboardRouter } from "./dashboard.js";
+import { router as analyticsRouter } from "./analytics.js";
+import { router as settingsRouter } from "./settings.js";
+import { router as webhooksRouter } from "./webhooks.js";
 
 const router: IRouter = Router();
 

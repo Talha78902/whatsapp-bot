@@ -1,242 +1,133 @@
-import { Router, type IRouter } from "express";
-import { eq, ilike, or, sql } from "drizzle-orm";
-import { db, customersTable, customerNotesTable, activityLogsTable } from "@workspace/db";
-import {
-  CreateCustomerBody,
-  UpdateCustomerBody,
-  GetCustomerParams,
-  UpdateCustomerParams,
-  DeleteCustomerParams,
-  GetCustomerNotesParams,
-  AddCustomerNoteParams,
-  AddCustomerNoteBody,
-  ImportCustomersBody,
-} from "@workspace/api-zod";
-import { requireAuth } from "../middlewares/auth";
+import { Router } from "express";
+import { customers, customerNotes, activityLogs } from "../lib/store.js";
+import { requireAuth } from "../middlewares/auth.js";
 
-const router: IRouter = Router();
+export const router = Router();
 
-router.get("/customers", requireAuth, async (req, res): Promise<void> => {
-  const page = Math.max(1, parseInt(String(req.query.page ?? "1"), 10));
-  const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "20"), 10)));
-  const offset = (page - 1) * limit;
-  const search = req.query.search ? String(req.query.search) : null;
-  const tag = req.query.tag ? String(req.query.tag) : null;
-  const status = req.query.status ? String(req.query.status) : null;
+function parseId(raw: string | string[]): number | null {
+  const str = Array.isArray(raw) ? raw[0] : raw;
+  const id = parseInt(str, 10);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
 
-  const conditions = [];
-  if (search) {
-    conditions.push(or(ilike(customersTable.name, `%${search}%`), ilike(customersTable.phone, `%${search}%`)));
-  }
-  if (status) {
-    conditions.push(eq(customersTable.status, status));
-  }
-  if (tag) {
-    conditions.push(sql`${customersTable.tags} @> ARRAY[${tag}]::text[]`);
-  }
-
-  const whereClause = conditions.length > 0 ? sql`${conditions.reduce((a, b) => sql`${a} AND ${b}`)}` : undefined;
-
-  const [{ count }] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customersTable)
-    .where(whereClause);
-
-  const customers = await db
-    .select()
-    .from(customersTable)
-    .where(whereClause)
-    .orderBy(customersTable.createdAt)
-    .limit(limit)
-    .offset(offset);
-
-  res.json({
-    data: customers.map((c) => ({
-      ...c,
-      lastContactedAt: c.lastContactedAt?.toISOString() ?? null,
-      createdAt: c.createdAt.toISOString(),
-      updatedAt: c.updatedAt.toISOString(),
-    })),
-    total: count,
-    page,
-    limit,
+// GET /api/customers
+router.get("/customers", requireAuth, (req, res): void => {
+  const { search, status, tags, page, limit } = req.query as Record<string, string>;
+  const tagList = tags ? tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined;
+  const result = customers.findAll({
+    search,
+    status,
+    tags: tagList,
+    page: page ? parseInt(page, 10) : 1,
+    limit: limit ? parseInt(limit, 10) : 20,
   });
+  res.json(result);
 });
 
-router.post("/customers", requireAuth, async (req, res): Promise<void> => {
-  const parsed = CreateCustomerBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
+// GET /api/customers/stats
+router.get("/customers/stats", requireAuth, (_req, res): void => {
+  res.json(customers.stats());
+});
+
+// GET /api/customers/:id
+router.get("/customers/:id", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  const customer = customers.findById(id);
+  if (!customer) { res.status(404).json({ error: "Not found", message: "Customer not found" }); return; }
+  res.json(customer);
+});
+
+// POST /api/customers
+router.post("/customers", requireAuth, (req, res): void => {
+  const { name, phone, email, tags, status } = req.body as Record<string, unknown>;
+  if (!name || !phone) {
+    res.status(400).json({ error: "Invalid input", message: "name and phone are required" });
     return;
   }
-
-  const [customer] = await db.insert(customersTable).values(parsed.data).returning();
-
-  await db.insert(activityLogsTable).values({
-    type: "customer_added",
-    title: "New customer added",
-    description: `${customer.name} (${customer.phone}) was added to the system`,
+  const customer = customers.insert({
+    name: String(name),
+    phone: String(phone),
+    email: email ? String(email) : null,
+    tags: Array.isArray(tags) ? tags.map(String) : [],
+    status: (status as "active" | "inactive" | "blocked") ?? "active",
+    assignedTo: null,
+    waId: null,
   });
-
-  res.status(201).json({
-    ...customer,
-    lastContactedAt: customer.lastContactedAt?.toISOString() ?? null,
-    createdAt: customer.createdAt.toISOString(),
-    updatedAt: customer.updatedAt.toISOString(),
-  });
+  activityLogs.insert({ userId: req.auth!.userId, action: "created", entity: "customer", entityId: customer.id, metadata: null });
+  res.status(201).json(customer);
 });
 
-router.get("/customers/stats", requireAuth, async (req, res): Promise<void> => {
-  const [total] = await db.select({ count: sql<number>`count(*)::int` }).from(customersTable);
-  const [active] = await db.select({ count: sql<number>`count(*)::int` }).from(customersTable).where(eq(customersTable.status, "active"));
-  const [inactive] = await db.select({ count: sql<number>`count(*)::int` }).from(customersTable).where(eq(customersTable.status, "inactive"));
-  const [blocked] = await db.select({ count: sql<number>`count(*)::int` }).from(customersTable).where(eq(customersTable.status, "blocked"));
-  const [newThisMonth] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(customersTable)
-    .where(sql`${customersTable.createdAt} >= date_trunc('month', now())`);
-
-  res.json({
-    total: total.count,
-    active: active.count,
-    inactive: inactive.count,
-    blocked: blocked.count,
-    newThisMonth: newThisMonth.count,
+// PUT /api/customers/:id
+router.put("/customers/:id", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  const { name, phone, email, tags, status, assignedTo } = req.body as Record<string, unknown>;
+  const updated = customers.update(id, {
+    ...(name !== undefined && { name: String(name) }),
+    ...(phone !== undefined && { phone: String(phone) }),
+    ...(email !== undefined && { email: email ? String(email) : null }),
+    ...(tags !== undefined && { tags: Array.isArray(tags) ? tags.map(String) : [] }),
+    ...(status !== undefined && { status: status as "active" | "inactive" | "blocked" }),
+    ...(assignedTo !== undefined && { assignedTo: assignedTo ? Number(assignedTo) : null }),
   });
+  if (!updated) { res.status(404).json({ error: "Not found", message: "Customer not found" }); return; }
+  activityLogs.insert({ userId: req.auth!.userId, action: "updated", entity: "customer", entityId: id, metadata: null });
+  res.json(updated);
 });
 
-router.post("/customers/import", requireAuth, async (req, res): Promise<void> => {
-  const parsed = ImportCustomersBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
+// DELETE /api/customers/:id
+router.delete("/customers/:id", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  const deleted = customers.delete(id);
+  if (!deleted) { res.status(404).json({ error: "Not found", message: "Customer not found" }); return; }
+  activityLogs.insert({ userId: req.auth!.userId, action: "deleted", entity: "customer", entityId: id, metadata: null });
+  res.json({ message: "Customer deleted" });
+});
+
+// POST /api/customers/import
+router.post("/customers/import", requireAuth, (req, res): void => {
+  const rows = req.body as Array<{ name: string; phone: string; email?: string; tags?: string[] }>;
+  if (!Array.isArray(rows)) {
+    res.status(400).json({ error: "Invalid input", message: "Body must be an array of customer objects" });
     return;
   }
-
   let imported = 0;
   let skipped = 0;
-  const errors: string[] = [];
-
-  for (const customer of parsed.data.customers) {
-    try {
-      const [existing] = await db.select().from(customersTable).where(eq(customersTable.phone, customer.phone));
-      if (existing) {
-        skipped++;
-        continue;
-      }
-      await db.insert(customersTable).values(customer);
-      imported++;
-    } catch (err) {
-      errors.push(`Failed to import ${customer.phone}: ${err instanceof Error ? err.message : "Unknown error"}`);
-    }
+  for (const row of rows) {
+    if (!row.name || !row.phone) { skipped++; continue; }
+    const existing = customers.findByPhone(row.phone);
+    if (existing) { skipped++; continue; }
+    customers.insert({ name: row.name, phone: row.phone, email: row.email ?? null, tags: row.tags ?? [], status: "active", assignedTo: null, waId: null });
+    imported++;
   }
-
-  res.json({ imported, skipped, errors });
+  res.json({ imported, skipped });
 });
 
-router.get("/customers/:id", requireAuth, async (req, res): Promise<void> => {
-  const params = GetCustomerParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, params.data.id));
-  if (!customer) {
-    res.status(404).json({ error: "Not found", message: "Customer not found" });
-    return;
-  }
-
-  res.json({
-    ...customer,
-    lastContactedAt: customer.lastContactedAt?.toISOString() ?? null,
-    createdAt: customer.createdAt.toISOString(),
-    updatedAt: customer.updatedAt.toISOString(),
-  });
+// GET /api/customers/:id/notes
+router.get("/customers/:id/notes", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  res.json(customerNotes.findByCustomer(id));
 });
 
-router.put("/customers/:id", requireAuth, async (req, res): Promise<void> => {
-  const params = UpdateCustomerParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const parsed = UpdateCustomerBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
-
-  const [customer] = await db
-    .update(customersTable)
-    .set({ ...parsed.data, updatedAt: new Date() })
-    .where(eq(customersTable.id, params.data.id))
-    .returning();
-
-  if (!customer) {
-    res.status(404).json({ error: "Not found", message: "Customer not found" });
-    return;
-  }
-
-  res.json({
-    ...customer,
-    lastContactedAt: customer.lastContactedAt?.toISOString() ?? null,
-    createdAt: customer.createdAt.toISOString(),
-    updatedAt: customer.updatedAt.toISOString(),
-  });
+// POST /api/customers/:id/notes
+router.post("/customers/:id/notes", requireAuth, (req, res): void => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  if (!customers.findById(id)) { res.status(404).json({ error: "Not found", message: "Customer not found" }); return; }
+  const { content } = req.body as { content?: string };
+  if (!content) { res.status(400).json({ error: "Invalid input", message: "content is required" }); return; }
+  const note = customerNotes.insert({ customerId: id, content, createdBy: req.auth!.userId });
+  res.status(201).json(note);
 });
 
-router.delete("/customers/:id", requireAuth, async (req, res): Promise<void> => {
-  const params = DeleteCustomerParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const [deleted] = await db.delete(customersTable).where(eq(customersTable.id, params.data.id)).returning();
-  if (!deleted) {
-    res.status(404).json({ error: "Not found", message: "Customer not found" });
-    return;
-  }
-
-  res.json({ success: true, message: "Customer deleted" });
+// DELETE /api/customers/:customerId/notes/:noteId
+router.delete("/customers/:customerId/notes/:noteId", requireAuth, (req, res): void => {
+  const noteId = parseId(req.params.noteId);
+  if (!noteId) { res.status(400).json({ error: "Invalid params", message: "noteId must be a positive integer" }); return; }
+  const deleted = customerNotes.delete(noteId);
+  if (!deleted) { res.status(404).json({ error: "Not found", message: "Note not found" }); return; }
+  res.json({ message: "Note deleted" });
 });
-
-router.get("/customers/:id/notes", requireAuth, async (req, res): Promise<void> => {
-  const params = GetCustomerNotesParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const notes = await db
-    .select()
-    .from(customerNotesTable)
-    .where(eq(customerNotesTable.customerId, params.data.id))
-    .orderBy(customerNotesTable.createdAt);
-
-  res.json(notes.map((n) => ({ ...n, createdAt: n.createdAt.toISOString() })));
-});
-
-router.post("/customers/:id/notes", requireAuth, async (req, res): Promise<void> => {
-  const params = AddCustomerNoteParams.safeParse(req.params);
-  if (!params.success) {
-    res.status(400).json({ error: "Invalid params", message: params.error.message });
-    return;
-  }
-
-  const parsed = AddCustomerNoteBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid input", message: parsed.error.message });
-    return;
-  }
-
-  const [note] = await db
-    .insert(customerNotesTable)
-    .values({ customerId: params.data.id, content: parsed.data.content })
-    .returning();
-
-  res.status(201).json({ ...note, createdAt: note.createdAt.toISOString() });
-});
-
-export default router;
