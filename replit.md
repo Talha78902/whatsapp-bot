@@ -7,9 +7,7 @@ A full-stack WhatsApp Business management platform with customer management, bul
 - `pnpm --filter @workspace/api-server run dev` — run the API server (port from `$PORT`)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/db run push` — push DB schema changes to the database (dev only)
 - Required env vars:
-  - `DATABASE_URL` — PostgreSQL connection string
   - `JWT_SECRET` (or `SESSION_SECRET`) — secret for signing JWTs (min 32 chars)
   - `PORT` — port the server listens on
 
@@ -17,9 +15,7 @@ A full-stack WhatsApp Business management platform with customer management, bul
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
-- DB: PostgreSQL + Drizzle ORM
 - Auth: JWT (bcryptjs + jsonwebtoken)
-- Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS-compatible ESM bundle)
 
@@ -28,7 +24,6 @@ A full-stack WhatsApp Business management platform with customer management, bul
 - `artifacts/api-server/src/routes/` — all API route handlers
 - `artifacts/api-server/src/middlewares/auth.ts` — JWT auth middleware + token helpers
 - `artifacts/api-server/src/seed-admin.ts` — seeds initial admin user
-- `lib/db/src/schema/index.ts` — **source of truth** for all DB tables
 - `lib/api-zod/src/generated/api.ts` — **source of truth** for all Zod validation schemas
 - `lib/api-spec/openapi.yaml` — OpenAPI spec (for codegen)
 
@@ -37,7 +32,7 @@ A full-stack WhatsApp Business management platform with customer management, bul
 - JWT-based auth with short-lived access tokens (15m) and long-lived refresh tokens (7d)
 - All settings (WhatsApp credentials, AI config, business info) stored as JSON in the `settings` table — no extra env vars needed at runtime beyond the required ones
 - esbuild bundles the entire server into a single ESM `.mjs` file for fast cold starts
-- `@workspace/db` and `@workspace/api-zod` are workspace packages bundled at build time — Railway sees the full monorepo
+- `@workspace/api-zod` is a workspace package bundled at build time — Railway sees the full monorepo
 
 ## Product
 
@@ -60,7 +55,6 @@ A full-stack WhatsApp Business management platform with customer management, bul
 ## Gotchas
 
 - `JWT_SECRET` (or `SESSION_SECRET`) must be set **before** the server starts — the middleware throws at import time if missing
-- After any schema change in `lib/db/src/schema/index.ts`, run `pnpm --filter @workspace/db run push` to apply to the database
 - The esbuild overrides in `pnpm-workspace.yaml` pin esbuild to `0.27.3` and exclude non-linux-x64 binaries — this is fine for Railway (linux-x64) but will break on macOS ARM without changes
 
 ## User preferences

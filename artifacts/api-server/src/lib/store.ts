@@ -4,6 +4,7 @@
  * Data is loaded into memory at startup and written back after every mutation.
  */
 
+import bcrypt from "bcryptjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -164,6 +165,20 @@ function loadStore(): StoreData {
 }
 
 let _store: StoreData = loadStore();
+
+if (_store.users.length === 0) {
+  const hash = bcrypt.hashSync("Admin@1234", 12);
+  const admin = {
+    email: "admin@talha.com",
+    password: hash,
+    name: "Admin",
+    role: "admin" as const,
+    avatar: null as string | null,
+    refreshToken: null as string | null,
+  };
+  _store.users.push({ ...admin, id: nextId("users"), createdAt: now(), updatedAt: now() });
+  save();
+}
 
 function save() {
   ensureDataDir();
