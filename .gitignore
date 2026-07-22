@@ -40,3 +40,4 @@ replit.nix
 
 # Generated files that should be committed
 # (lib/api-client-react/src/generated/ and lib/api-zod/src/generated/ are committed)
+.vercel
