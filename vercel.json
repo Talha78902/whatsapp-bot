@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "installCommand": "npm install -g pnpm && pnpm install --no-frozen-lockfile",
-  "buildCommand": "pnpm --filter mockup-sandbox run build && pnpm exec tsc -p artifacts/api-server/tsconfig.vercel.json",
+  "buildCommand": "pnpm --filter mockup-sandbox run build",
   "functions": {
     "api/index.ts": {
       "memory": 512,
