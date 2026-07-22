@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { api } from "../lib/api";
 
 interface Kpis {
@@ -11,10 +11,14 @@ interface Kpis {
 
 export function Dashboard() {
   const [kpis, setKpis] = useState<Kpis | null>(null);
+  const [error, setError] = useState("");
 
-  useEffect(() => {
-    api<Kpis>("/api/dashboard/kpis").then(setKpis).catch(console.error);
+  const load = useCallback(() => {
+    setError("");
+    api<Kpis>("/api/dashboard/kpis").then(setKpis).catch((e) => setError(e.message));
   }, []);
+
+  useEffect(load, [load]);
 
   const cards = kpis
     ? [
@@ -29,9 +33,14 @@ export function Dashboard() {
   return (
     <div>
       <h1 className="text-2xl font-semibold mb-6">Dashboard</h1>
-      {!kpis ? (
-        <p className="text-muted-foreground">Loading...</p>
-      ) : (
+      {error && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md">
+          <p className="text-sm text-red-600">{error}</p>
+          <button onClick={load} className="mt-2 text-xs text-red-600 underline">Retry</button>
+        </div>
+      )}
+      {!kpis && !error && <p className="text-muted-foreground">Loading...</p>}
+      {kpis && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {cards.map((card) => (
             <div key={card.label} className="bg-white rounded-xl border p-6">

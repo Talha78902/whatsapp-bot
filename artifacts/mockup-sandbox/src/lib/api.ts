@@ -13,6 +13,12 @@ export async function api<T = unknown>(
       ...init?.headers,
     },
   });
+  if (res.status === 401) {
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+    window.location.href = "/";
+    throw new Error("Session expired");
+  }
   if (!res.ok) {
     const body = await res.text();
     throw new Error(body || `HTTP ${res.status}`);
