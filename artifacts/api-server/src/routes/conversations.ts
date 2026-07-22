@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { conversations, conversationMessages } from "../lib/store.js";
+import { conversations, conversationMessages, settings, customers } from "../lib/store.js";
 import { requireAuth } from "../middlewares/auth.js";
+import { getWhatsAppConfig, sendTextMessage } from "../lib/whatsapp.js";
 
 export const router = Router();
 
@@ -49,13 +50,25 @@ router.post("/conversations/:id/messages", requireAuth, async (req, res): Promis
   if (!conv) { res.status(404).json({ error: "Not found", message: "Conversation not found" }); return; }
   const { type, content } = req.body as { type?: string; content?: string };
   if (!content) { res.status(400).json({ error: "Invalid input", message: "content is required" }); return; }
+
+  const waConfig = getWhatsAppConfig(settings);
+  const cust = customers.findById(conv.customerId);
+
+  let waMessageId: string | null = null;
+  if (waConfig && cust?.phone) {
+    const result = await sendTextMessage({ to: cust.phone, text: content, config: waConfig });
+    if ("waMessageId" in result) {
+      waMessageId = result.waMessageId;
+    }
+  }
+
   const message = conversationMessages.insert({
     conversationId: id,
     direction: "outbound",
     type: type ?? "text",
     content,
-    status: "sent",
-    waMessageId: null,
+    status: waMessageId ? "sent" : "failed",
+    waMessageId,
     isAiGenerated: false,
   });
   conversations.update(id, { lastMessageAt: new Date().toISOString(), lastMessagePreview: content.slice(0, 100) });

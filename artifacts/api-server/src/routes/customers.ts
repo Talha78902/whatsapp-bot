@@ -1,6 +1,7 @@
 import { Router } from "express";
-import { customers, customerNotes, activityLogs } from "../lib/store.js";
+import { customers, customerNotes, activityLogs, conversations, conversationMessages, settings } from "../lib/store.js";
 import { requireAuth } from "../middlewares/auth.js";
+import { getWhatsAppConfig, sendTextMessage } from "../lib/whatsapp.js";
 
 export const router = Router();
 
@@ -121,6 +122,49 @@ router.post("/customers/:id/notes", requireAuth, (req, res): void => {
   if (!content) { res.status(400).json({ error: "Invalid input", message: "content is required" }); return; }
   const note = customerNotes.insert({ customerId: id, content, createdBy: req.auth!.userId });
   res.status(201).json(note);
+});
+
+// POST /api/customers/:id/send-message
+router.post("/customers/:id/send-message", requireAuth, async (req, res): Promise<void> => {
+  const id = parseId(req.params.id);
+  if (!id) { res.status(400).json({ error: "Invalid params", message: "id must be a positive integer" }); return; }
+  const cust = customers.findById(id);
+  if (!cust) { res.status(404).json({ error: "Not found", message: "Customer not found" }); return; }
+
+  const { content } = req.body as { content?: string };
+  if (!content) { res.status(400).json({ error: "Invalid input", message: "content is required" }); return; }
+
+  const waConfig = getWhatsAppConfig(settings);
+  if (!waConfig) {
+    res.status(400).json({ error: "WhatsApp not configured", message: "Set phoneNumberId and accessToken in settings first" });
+    return;
+  }
+
+  const result = await sendTextMessage({ to: cust.phone, text: content, config: waConfig });
+  if ("error" in result) {
+    res.status(502).json({ error: "WhatsApp API error", message: result.error });
+    return;
+  }
+
+  let conv = conversations.findByCustomerId(cust.id);
+  if (!conv) {
+    conv = conversations.insert({ customerId: cust.id, status: "open", assignedTo: req.auth!.userId, lastMessageAt: new Date().toISOString(), lastMessagePreview: content.slice(0, 100) });
+  } else {
+    conversations.update(conv.id, { lastMessageAt: new Date().toISOString(), lastMessagePreview: content.slice(0, 100) });
+  }
+
+  const message = conversationMessages.insert({
+    conversationId: conv.id,
+    direction: "outbound",
+    type: "text",
+    content,
+    status: "sent",
+    waMessageId: result.waMessageId,
+    isAiGenerated: false,
+  });
+
+  activityLogs.insert({ userId: req.auth!.userId, action: "sent_message", entity: "customer", entityId: id, metadata: JSON.stringify({ content: content.slice(0, 100) }) });
+  res.status(201).json(message);
 });
 
 // DELETE /api/customers/:customerId/notes/:noteId
